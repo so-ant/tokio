@@ -370,10 +370,23 @@ impl ScheduledIo {
     }
 
     pub(crate) fn clear_readiness(&self, event: ReadyEvent) {
-        // This consumes the current readiness state **except** for closed
-        // states. Closed states are excluded because they are final states.
-        let mask_no_closed = event.ready - Ready::READ_CLOSED - Ready::WRITE_CLOSED;
-        self.set_readiness(Tick::Clear(event.tick), |curr| curr - mask_no_closed);
+        // This consumes the current readiness state **except** for
+        // `READ_CLOSED`, which is a final state.
+        //
+        // `WRITE_CLOSED` is not excluded, because it is not always final. On
+        // Linux a message on a socket's error queue (a transmit timestamp, a
+        // `MSG_ZEROCOPY` completion) makes epoll report `EPOLLERR`, and
+        // `EPOLLOUT` together with `EPOLLERR` is reported as write-closed
+        // because that is what a pipe with no reader looks like. Readiness is
+        // cleared after an operation returned `WouldBlock`, and a write that
+        // returns `WouldBlock` proves that the write half is open: a closed
+        // one fails with an error instead. If `WRITE_CLOSED` stayed set, every
+        // later wait for write readiness would return at once and a writer
+        // whose send buffer is full would spin. A real close is not lost: it
+        // arrives as a new event, which the tick check keeps from being
+        // cleared here.
+        let mask = event.ready - Ready::READ_CLOSED;
+        self.set_readiness(Tick::Clear(event.tick), |curr| curr - mask);
     }
 
     pub(crate) fn clear_wakers(&self) {
